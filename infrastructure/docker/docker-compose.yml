@@ -1,0 +1,136 @@
+# =============================================================================
+# DOCKER COMPOSE — Local Development
+#
+# Services:
+#   postgres  — PostgreSQL 16 with pg_trgm + uuid-ossp extensions
+#   redis     — Redis 7 for BullMQ queues + caching
+#   api       — NestJS API (hot reload via volume mount)
+#   worker    — NestJS Worker (hot reload)
+#   web       — Next.js frontend (hot reload)
+#
+# Usage:
+#   docker compose up -d postgres redis   # start infra only
+#   docker compose up                     # start everything
+#   docker compose logs -f api            # tail API logs
+#
+# Ports:
+#   5432  → PostgreSQL
+#   6379  → Redis
+#   4000  → API
+#   3000  → Web
+# =============================================================================
+
+version: "3.9"
+
+services:
+  # ── MongoDB ─────────────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:6
+    container_name: mpc_mongodb
+    restart: unless-stopped
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: |
+        mongosh --quiet --eval "
+        try {
+          rs.status();
+        } catch (e) {
+          rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]});
+        }
+        "
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: mpc_redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save ""
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── API ─────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+      target: builder   # use builder stage for hot reload
+    container_name: mpc_api
+    restart: unless-stopped
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: mongodb://mongodb:27017/mpc_dev
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev_jwt_secret_change_in_production
+      JWT_EXPIRES_IN: 7d
+      FRONTEND_URL: http://localhost:3000
+      PORT: 4000
+      # Queue dashboard — open http://localhost:4000/admin/queues in dev (no token needed)
+      QUEUE_DASHBOARD_TOKEN: ${QUEUE_DASHBOARD_TOKEN:-dev_dashboard_token}
+    ports:
+      - "4000:4000"
+    volumes:
+      - ../../apps/api/src:/app/apps/api/src  # hot reload
+    command: npx nest start --watch --config apps/api/nest-cli.json
+
+  # ── Worker ──────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.worker
+      target: builder
+    container_name: mpc_worker
+    restart: unless-stopped
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: mongodb://mongodb:27017/mpc_dev
+      REDIS_URL: redis://redis:6379
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # P0 fix: pages stored outside build output so `nest build` cannot wipe them
+      PAGES_DIST_ROOT: /data/generated-pages
+    volumes:
+      - ../../apps/worker/src:/app/apps/worker/src
+      - pages_data:/data/generated-pages
+    command: npx nest start --watch --config apps/worker/nest-cli.json
+
+  # ── Web ─────────────────────────────────────────────────────────────────────
+  web:
+    image: node:20-alpine
+    container_name: mpc_web
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../../apps/web:/app
+      - /app/node_modules
+      - /app/.next
+    command: sh -c "npm install && npm run dev"
+
+volumes:
+  mongodb_data:
+  redis_data:
+  pages_data:

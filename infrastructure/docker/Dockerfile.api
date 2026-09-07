@@ -1,0 +1,74 @@
+# =============================================================================
+# API DOCKERFILE — Multi-stage build
+#
+# Stage 1 (builder): Install all deps + compile TypeScript
+# Stage 2 (runner):  Copy only compiled output + prod deps
+#
+# Why multi-stage?
+# The builder stage has devDependencies (TypeScript, types, etc.) = ~500MB.
+# The runner stage has only production deps = ~150MB.
+# Smaller image = faster pulls, less attack surface, lower ECR storage cost.
+#
+# Final image size target: < 200MB
+# =============================================================================
+
+FROM node:20-alpine AS base
+WORKDIR /app
+RUN apk add --no-cache libc6-compat
+
+# ── Stage 1: Install dependencies ────────────────────────────────────────────
+FROM base AS deps
+COPY package.json package-lock.json turbo.json ./
+COPY apps/api/package.json ./apps/api/
+COPY packages/database/package.json ./packages/database/
+COPY packages/queue/package.json ./packages/queue/
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/template-engine/package.json ./packages/template-engine/
+COPY packages/seo-utils/package.json ./packages/seo-utils/
+
+RUN npm ci --workspace=apps/api --workspace=packages/database \
+    --workspace=packages/queue --workspace=packages/shared \
+    --workspace=packages/template-engine --workspace=packages/seo-utils
+
+# ── Stage 2: Build ────────────────────────────────────────────────────────────
+FROM base AS builder
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
+
+COPY . .
+
+# Generate Prisma client
+RUN npx prisma generate --schema=packages/database/prisma/schema.prisma
+
+# Build shared packages first (API depends on them)
+RUN npx tsc -p packages/shared/tsconfig.json || true
+RUN npx tsc -p packages/queue/tsconfig.json || true
+RUN npx tsc -p packages/template-engine/tsconfig.json || true
+
+# Build API
+RUN npx nest build --config apps/api/nest-cli.json
+
+# ── Stage 3: Production runner ────────────────────────────────────────────────
+FROM base AS runner
+ENV NODE_ENV=production
+
+# Create non-root user — never run as root in production
+RUN addgroup --system --gid 1001 nodejs \
+ && adduser --system --uid 1001 nestjs
+
+WORKDIR /app
+
+# Copy only what's needed to run
+COPY --from=builder --chown=nestjs:nodejs /app/apps/api/dist ./dist
+COPY --from=builder --chown=nestjs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nestjs:nodejs /app/packages/database/prisma ./prisma
+
+USER nestjs
+
+EXPOSE 4000
+
+# Health check — Docker/ECS will restart container if this fails
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:4000/api/v1/health || exit 1
+
+CMD ["node", "dist/main.js"]

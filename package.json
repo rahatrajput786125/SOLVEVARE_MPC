@@ -1,0 +1,56 @@
+{
+  "name": "mpc-saas",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "npm@10.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "db:generate": "turbo run db:generate --filter=@mpc/database",
+    "db:migrate": "turbo run db:migrate --filter=@mpc/database",
+    "db:push": "turbo run db:push --filter=@mpc/database",
+    "db:studio": "turbo run db:studio --filter=@mpc/database"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.4.9",
+    "@prisma/client": "^5.22.0",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^20.0.0",
+    "prettier": "^3.2.0",
+    "prisma": "^5.22.0",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "turbo": "latest",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "append-field": "^2.0.0",
+    "body-parser": "^2.2.2",
+    "busboy": "^1.6.0",
+    "concat-stream": "^2.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "fast-safe-stringify": "^2.1.1",
+    "glob-parent": "^6.0.2",
+    "iterare": "^1.2.1",
+    "libphonenumber-js": "^1.13.4",
+    "minimist": "^1.2.8",
+    "mkdirp": "^3.0.1",
+    "msgpackr": "^2.0.2",
+    "object-assign": "^4.1.1",
+    "path-to-regexp": "^8.4.2",
+    "stripe": "^14.25.0",
+    "uid": "^2.0.2",
+    "xtend": "^4.0.2"
+  }
+}

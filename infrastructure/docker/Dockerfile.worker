@@ -1,0 +1,53 @@
+# =============================================================================
+# WORKER DOCKERFILE — Multi-stage build
+#
+# Same pattern as API but:
+#   - No HTTP port exposed (worker has no HTTP server)
+#   - No health check via HTTP — use Bull queue metrics instead
+#   - Can run multiple replicas safely (BullMQ handles job distribution)
+# =============================================================================
+
+FROM node:20-alpine AS base
+WORKDIR /app
+RUN apk add --no-cache libc6-compat
+
+FROM base AS deps
+COPY package.json package-lock.json turbo.json ./
+COPY apps/worker/package.json ./apps/worker/
+COPY packages/database/package.json ./packages/database/
+COPY packages/queue/package.json ./packages/queue/
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/template-engine/package.json ./packages/template-engine/
+COPY packages/seo-utils/package.json ./packages/seo-utils/
+
+RUN npm ci --workspace=apps/worker --workspace=packages/database \
+    --workspace=packages/queue --workspace=packages/shared \
+    --workspace=packages/template-engine --workspace=packages/seo-utils
+
+FROM base AS builder
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+RUN npx prisma generate --schema=packages/database/prisma/schema.prisma
+RUN npx tsc -p packages/shared/tsconfig.json || true
+RUN npx tsc -p packages/queue/tsconfig.json || true
+RUN npx tsc -p packages/template-engine/tsconfig.json || true
+RUN npx nest build --config apps/worker/nest-cli.json
+
+FROM base AS runner
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 nodejs \
+ && adduser --system --uid 1001 worker
+
+WORKDIR /app
+
+COPY --from=builder --chown=worker:nodejs /app/apps/worker/dist ./dist
+COPY --from=builder --chown=worker:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=worker:nodejs /app/packages/database/prisma ./prisma
+
+USER worker
+
+# Workers scale horizontally — run as many replicas as needed
+# BullMQ ensures each job is processed by exactly one worker
+CMD ["node", "dist/main.js"]

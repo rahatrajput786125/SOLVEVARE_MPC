@@ -1,0 +1,79 @@
+# =============================================================================
+# DOCKER COMPOSE — Production Override
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Differences from dev:
+#   - Uses pre-built images from ECR (not local build)
+#   - No source volume mounts
+#   - Worker runs 3 replicas for horizontal scaling
+#   - No postgres/redis (use RDS + ElastiCache in production)
+#   - Resource limits enforced
+# =============================================================================
+
+version: "3.9"
+
+services:
+  api:
+    image: ${ECR_REGISTRY}/mpc-api:${IMAGE_TAG:-latest}
+    build: !reset null
+    volumes: []
+    command: node dist/main.js
+    deploy:
+      replicas: 2
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+        reservations: { cpus: "0.25", memory: 256M }
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      FRONTEND_URL: ${FRONTEND_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_REGION: ${S3_REGION}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      QUEUE_DASHBOARD_TOKEN: ${QUEUE_DASHBOARD_TOKEN}
+
+  worker:
+    image: ${ECR_REGISTRY}/mpc-worker:${IMAGE_TAG:-latest}
+    build: !reset null
+    volumes: []
+    command: node dist/main.js
+    deploy:
+      # Scale workers independently from API
+      # Add more replicas when queue depth grows
+      replicas: 3
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+        reservations: { cpus: "0.5", memory: 512M }
+      restart_policy:
+        condition: on-failure
+        max_attempts: 5
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_REGION: ${S3_REGION}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL}
+      # P0 fix: must be on a persistent volume, never inside /app/dist
+      PAGES_DIST_ROOT: ${PAGES_DIST_ROOT:-/data/generated-pages}
+
+  # Remove dev-only services in production
+  postgres:
+    profiles: ["dev-only"]
+  redis:
+    profiles: ["dev-only"]
+  web:
+    profiles: ["dev-only"]
